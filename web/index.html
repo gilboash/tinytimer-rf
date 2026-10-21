@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RF Lap Timer</title><link rel="stylesheet" href="/app.css"></head>
+<body>
+<div class="wrap"><div class="grid">
+  <section class="card c12">
+    <div class="row" style="justify-content:space-between">
+      <div><h2 style="margin:0">Race</h2><div class="big" id="clock">0.0</div><div class="muted" id="state">idle</div></div>
+      <div class="row">
+        <label class="check">Laps <input type="number" id="laps" min="0" max="99"></label>
+        <label class="check">Countdown <input type="number" id="countdown" min="0" max="30"> s</label>
+        <label class="check" title="First crossing after the start begins lap 1 (not a lap itself)"><input type="checkbox" id="holeshot"> holeshot</label>
+        <label class="check"><input type="checkbox" id="voice"> voice call-outs</label>
+        <button class="primary" id="start">Start race</button>
+        <button id="stop">Stop</button>
+        <button class="danger" id="reset">Reset</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="card c8">
+    <h2>Standings</h2>
+    <table><thead><tr><th>#</th><th>Pilot</th><th class="num">Laps</th><th class="num">Last</th><th class="num">Best</th><th class="num">Total</th><th class="num">Gap</th></tr></thead>
+    <tbody id="standings"></tbody></table>
+    <div class="muted" id="nopilots" style="display:none;padding:12px 0">No pilots enabled. Enable at least one on the right.</div>
+  </section>
+
+  <section class="card c4">
+    <h2>Pilots</h2>
+    <table><tbody id="pilots"></tbody></table>
+    <div class="help">Pilot numbers are what the gate knows; names stay on this server. Frequency and thresholds are sent to the gate (USB if connected, otherwise LoRa). Fine-tune thresholds on the <a href="/gate">Gate debug</a> page.</div>
+  </section>
+
+  <section class="card c7">
+    <h2>Lap times</h2>
+    <canvas id="lapchart" height="220"></canvas>
+    <div class="help" id="lapnote"></div>
+  </section>
+
+  <section class="card c5">
+    <h2>Recent passes</h2>
+    <div class="feed mono" id="feed"></div>
+  </section>
+</div></div>
+
+<script src="/app.js"></script>
+<script>
+header('race'); connect();
+const passes = [];
+function renderPilots() {
+  if (!App.cfg) return;
+  const tb = $('#pilots'); if (tb.contains(document.activeElement) && document.activeElement.tagName === 'INPUT' && document.activeElement.type === 'text') return;
+  tb.innerHTML = App.cfg.pilots.map(p => `<tr data-n="${p.n}">
+    <td style="width:24px"><span class="swatch" style="background:${PCOL(p.n)}"></span></td>
+    <td><input type="text" value="${esc(p.name)}" data-k="name" style="width:110px"></td>
+    <td><select data-k="freq">${RACEBAND.map((f, i) => `<option value="${f}" ${f === p.freq ? 'selected' : ''}>R${i + 1} ${f}</option>`).join('')}</select></td>
+    <td><input type="checkbox" data-k="enabled" ${p.enabled ? 'checked' : ''} title="enabled"></td></tr>`).join('');
+}
+$('#pilots').addEventListener('change', e => {
+  const tr = e.target.closest('tr'); if (!tr) return;
+  const k = e.target.dataset.k;
+  const v = k === 'enabled' ? e.target.checked : k === 'freq' ? +e.target.value : e.target.value;
+  post('/api/pilot', { n: +tr.dataset.n, [k]: v });
+});
+function setting(id, key, cast = v => v) {
+  const el = $('#' + id);
+  el.addEventListener('change', () => post('/api/settings', { [key]: cast(el.type === 'checkbox' ? el.checked : el.value) }));
+}
+setting('laps', 'laps', Number); setting('countdown', 'countdown', Number); setting('holeshot', 'holeshot');
+$('#voice').checked = voiceOn;
+$('#voice').addEventListener('change', e => { setVoice(e.target.checked); if (e.target.checked) { const u = new SpeechSynthesisUtterance('Voice on'); speechSynthesis.speak(u); } });
+$('#start').onclick = () => post('/api/race/start');
+$('#stop').onclick = () => post('/api/race/stop');
+$('#reset').onclick = () => post('/api/race/reset');
+
+function renderSettings() {
+  if (!App.cfg) return;
+  const s = App.cfg.settings;
+  for (const [id, k] of [['laps', 'laps'], ['countdown', 'countdown']]) if (document.activeElement !== $('#' + id)) $('#' + id).value = s[k];
+  $('#holeshot').checked = s.holeshot;
+}
+function renderStandings() {
+  const r = App.race; if (!r) return;
+  const rows = r.standings;
+  $('#nopilots').style.display = rows.length ? 'none' : 'block';
+  const lead = rows[0];
+  $('#standings').innerHTML = rows.map((s, i) => {
+    let gap = '';
+    if (i > 0 && lead) gap = s.laps.length < lead.laps.length ? `−${lead.laps.length - s.laps.length} lap` : fmt((s.last_t - lead.last_t) * 1000);
+    const fin = s.finished_t ? ' <span class="tag good">finished</span>' : '';
+    return `<tr><td>${i + 1}</td><td><span class="swatch" style="background:${PCOL(s.n)}"></span>${esc(s.name)}${fin}</td>
+      <td class="num">${s.laps.length}</td><td class="num">${fmt(s.last)}</td><td class="num">${fmt(s.best)}</td>
+      <td class="num">${s.laps.length ? fmt(s.total) : '–'}</td><td class="num">${gap}</td></tr>`;
+  }).join('');
+  $('#state').textContent = { idle: 'idle', staging: 'get ready…', running: 'racing', finished: 'finished' }[r.state];
+  $('#start').disabled = r.state === 'staging' || r.state === 'running';
+  drawLapChart();
+}
+function tickClock() {
+  const r = App.race; if (!r) return;
+  let t = 0;
+  if (r.state === 'staging') t = serverNow() - r.go_t;           // negative: counting down
+  else if (r.state === 'running') t = serverNow() - r.go_t;
+  else if (r.state === 'finished' && r.finish_t && r.go_t) t = r.finish_t - r.go_t;
+  const neg = t < 0;
+  $('#clock').textContent = (neg ? '−' : '') + fmt(Math.abs(t) * 1000).replace(/^(\d+\.\d)\d$/, '$1');
+}
+setInterval(tickClock, 100);
+
+function drawLapChart() {
+  const cv = $('#lapchart'), dpr = devicePixelRatio || 1, W = cv.clientWidth, H = 220;
+  cv.width = W * dpr; cv.height = H * dpr;
+  const g = cv.getContext('2d'); g.scale(dpr, dpr);
+  const css = getComputedStyle(document.documentElement);
+  const grid = css.getPropertyValue('--grid'), mut = css.getPropertyValue('--muted');
+  const rows = (App.race?.standings || []).filter(s => s.laps.length);
+  const maxLaps = Math.max(2, ...rows.map(s => s.laps.length));
+  const all = rows.flatMap(s => s.laps);
+  $('#lapnote').textContent = rows.length ? '' : 'Lap times appear here once a race is running.';
+  if (!all.length) return;
+  const lo = Math.min(...all) * 0.9, hi = Math.max(...all) * 1.08;
+  const L = 44, R = 10, T = 10, B = 24;
+  const x = i => L + (maxLaps === 1 ? 0 : i / (maxLaps - 1)) * (W - L - R);
+  const y = v => T + (1 - (v - lo) / (hi - lo)) * (H - T - B);
+  g.font = '11px sans-serif'; g.fillStyle = mut; g.strokeStyle = grid; g.lineWidth = 1;
+  for (let k = 0; k <= 3; k++) {
+    const v = lo + (hi - lo) * k / 3; g.beginPath(); g.moveTo(L, y(v)); g.lineTo(W - R, y(v)); g.stroke();
+    g.textAlign = 'right'; g.fillText((v / 1000).toFixed(1) + 's', L - 6, y(v) + 4);
+  }
+  g.textAlign = 'center';
+  for (let i = 0; i < maxLaps; i++) g.fillText(i + 1, x(i), H - 6);
+  for (const s of rows) {
+    g.strokeStyle = css.getPropertyValue('--p' + s.n); g.fillStyle = g.strokeStyle; g.lineWidth = 2;
+    g.beginPath(); s.laps.forEach((v, i) => i ? g.lineTo(x(i), y(v)) : g.moveTo(x(i), y(v))); g.stroke();
+    s.laps.forEach((v, i) => { g.beginPath(); g.arc(x(i), y(v), 4, 0, 7); g.fill(); });
+  }
+}
+onMsg(m => {
+  if (m.type === 'snapshot') { (m.recent || []).forEach(p => passes.push(p)); renderPilots(); renderSettings(); renderStandings(); renderFeed(); }
+  if (m.type === 'cfg') { renderPilots(); renderSettings(); }
+  if (m.type === 'race') renderStandings();
+  if (m.type === 'pass') { passes.push(m); passes.splice(0, passes.length - 40); renderFeed(); }
+});
+function renderFeed() {
+  $('#feed').innerHTML = passes.slice(-12).reverse().map(p => {
+    const name = App.cfg ? App.cfg.pilots[p.pilot - 1].name : 'P' + p.pilot;
+    const via = p.source === 'lora' ? `LoRa ${p.rssi} dBm` : p.source;
+    return `<div><span class="swatch" style="background:${PCOL(p.pilot)}"></span>${esc(name)} #${p.count} · lap ${p.lap_ms ? fmt(p.lap_ms) : '–'} · <span class="muted">${via}</span></div>`;
+  }).join('') || '<div class="muted">No passes yet.</div>';
+}
+addEventListener('resize', drawLapChart);
+</script>
+</body></html>

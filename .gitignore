@@ -1,0 +1,7 @@
+.pio/
+.vscode/
+__pycache__/
+*.pyc
+node_modules/
+server/data/
+.DS_Store
