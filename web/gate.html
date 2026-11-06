@@ -1,10 +1,10 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>RF Lap Timer – Gate debug</title><link rel="stylesheet" href="/app.css"></head>
+<title>tinytimer · Gate debug</title><link rel="icon" href="/breaking_carbon.jpg"><link rel="stylesheet" href="/app.css"></head>
 <body>
 <div class="wrap"><div class="grid">
   <section class="card c12">
-    <div class="row" style="justify-content:space-between"><h2 style="margin:0">Live signal per pilot (dBFS)</h2>
+    <div class="row" style="justify-content:space-between"><h2 style="margin:0">Live signal per pilot (<span class="unit">dBFS</span>)</h2>
       <div class="row"><label class="check">Window <select id="win"><option value="10">10 s</option><option value="20" selected>20 s</option><option value="60">60 s</option></select></label>
       <button id="pause">Pause</button></div></div>
     <div style="position:relative"><canvas id="chart" height="300"></canvas><div id="tip" class="card mono" style="position:absolute;display:none;padding:6px 8px;pointer-events:none"></div></div>
@@ -13,7 +13,7 @@
 
   <section class="card c8">
     <h2>Pilots on this gate</h2>
-    <table><thead><tr><th></th><th>Pilot</th><th class="num">Level</th><th>Freq</th><th class="num">Enter</th><th class="num">Exit</th><th class="num">Passes</th><th></th></tr></thead>
+    <table><thead><tr><th></th><th>Pilot</th><th class="num">Level</th><th>Freq</th><th class="num">Enter <span class="u2">dB</span></th><th class="num">Exit <span class="u2">dB</span></th><th class="num">Passes</th><th></th></tr></thead>
     <tbody id="rows"></tbody></table>
     <div class="row" style="margin-top:12px">
       <button id="saveGate" title="Store pilots, thresholds and gate id in the gate's flash so it boots into the same setup">Save to gate flash</button>
@@ -64,8 +64,8 @@ function pilotRows() {
     <td class="num mono" id="lv${p.n}">–</td>
     <td><select data-k="freq">${RACEBAND.map((f, i) => `<option value="${f}" ${f === p.freq ? 'selected' : ''}>R${i + 1} ${f}</option>`).join('')}</select>
       <label class="check"><input type="checkbox" data-k="enabled" ${p.enabled ? 'checked' : ''}>on</label></td>
-    <td class="num"><input type="number" min="2" max="254" data-k="enter" value="${p.enter}"></td>
-    <td class="num"><input type="number" min="1" max="253" data-k="exit" value="${p.exit}"></td>
+    <td class="num"><input type="number" step="0.25" data-k="enter" value="${dbShow(p.enter)}"></td>
+    <td class="num"><input type="number" step="0.25" data-k="exit" value="${dbShow(p.exit)}"></td>
     <td class="num mono">${gp.count ?? '–'}</td>
     <td><button data-apply="${p.n}">Apply</button></td></tr>`;
   }).join('');
@@ -76,7 +76,7 @@ $('#rows').addEventListener('click', e => {
   if (pick) { sel = +pick; store.set('selPilot', sel); pilotRows(); draw(); }
   if (ap) {
     const tr = e.target.closest('tr'), q = k => tr.querySelector(`[data-k=${k}]`);
-    post('/api/pilot', { n: +ap, freq: +q('freq').value, enabled: q('enabled').checked, enter: +q('enter').value, exit: +q('exit').value })
+    post('/api/pilot', { n: +ap, freq: +q('freq').value, enabled: q('enabled').checked, enter: fromDb(+q('enter').value), exit: fromDb(+q('exit').value) })
       .then(r => { if (r.error) alert(r.error); });
   }
 });
@@ -96,7 +96,7 @@ function logLine(m) {
   const el = $('#log'), stick = el.scrollTop + el.clientHeight >= el.scrollHeight - 8;
   const d = document.createElement('div');
   d.className = m.src.startsWith('tx') ? 'tx' : m.src === 'server' ? 'srv' : '';
-  d.textContent = `${new Date(m.t * 1000).toLocaleTimeString()} ${m.src.padEnd(7)} ${m.line}`;
+  d.textContent = `${new Date(wall(m.t)).toLocaleTimeString()} ${m.src.padEnd(7)} ${m.line}`;
   el.appendChild(d); while (el.childElementCount > 300) el.firstChild.remove();
   if (stick) el.scrollTop = el.scrollHeight;
 }
@@ -107,7 +107,7 @@ $('#send').onclick = sendCmd; $('#cmd').onkeydown = e => { if (e.key === 'Enter'
 function infoCards() {
   const g = App.gate.gate, l = App.gate.lora, d = App.devices;
   $('#gateInfo').innerHTML = g ? `gate id ${g.id} · min lap ${g.min_lap_ms} ms<br>USB ${esc(d.gate || '–')}<br>` +
-    g.pilots.filter(p => p.freq).map(p => `P${p.n} ${p.freq} MHz  enter ${p.enter} (${dbfs(p.enter).toFixed(1)} dBFS)  exit ${p.exit}  passes ${p.count}`).join('<br>') : 'no data (gate not on USB)';
+    g.pilots.filter(p => p.freq).map(p => `P${p.n} ${p.freq} MHz  enter ${dbShow(p.enter)} ${levelShort()} (code ${p.enter})  exit ${dbShow(p.exit)} (code ${p.exit})  passes ${p.count}`).join('<br>') : 'no data (gate not on USB)';
   $('#loraInfo').innerHTML = l ? (l.up ? `radio up · ${l.freq} MHz SF${l.sf}<br>tx ${l.tx} · acked ${l.acked} · retries ${l.retries} · dropped ${l.dropped} · pending ${l.pending}<br>rx ${l.rx} · cfg received ${l.cfg_rx}<br>last uplink as seen by base: ${l.rssi} dBm / ${l.snr} dB SNR`
     : `<span style="color:var(--bad)">radio NOT up</span> (RadioLib error ${l.err}). Check the Wio-SX1262 module on the XIAO C5 and the pin map in gate/src/gate/board_pins.h.`) : 'no data';
   const st = Object.values(App.status);
@@ -126,16 +126,16 @@ function calSample(code) {
   if (code) { cal.min = Math.min(cal.min, code); cal.max = Math.max(cal.max, code); }
   const left = (cal.until - performance.now()) / 1000;
   if (left <= 0) {
-    if (cal.kind === 'noise') { noise = cal.max; $('#noiseV').textContent = `max ${dbfs(noise).toFixed(1)} dBFS (${noise})`; }
-    else { peak = cal.max; $('#peakV').textContent = `max ${dbfs(peak).toFixed(1)} dBFS (${peak})`; }
+    if (cal.kind === 'noise') { noise = cal.max; $('#noiseV').textContent = `max ${dbfs(noise).toFixed(1)} ${levelUnit()} (${noise})`; }
+    else { peak = cal.max; $('#peakV').textContent = `max ${dbfs(peak).toFixed(1)} ${levelUnit()} (${peak})`; }
     $('#calNoise').disabled = $('#calPeak').disabled = false; cal = null;
     $('#calApply').disabled = !(noise != null && peak != null && peak > noise + 8);
   } else $(cal.kind === 'noise' ? '#noiseV' : '#peakV').textContent = `measuring… ${left.toFixed(1)} s`;
 }
 $('#calApply').onclick = () => {
   const tr = $(`#rows tr[data-n="${sel}"]`);
-  tr.querySelector('[data-k=enter]').value = Math.round(noise + (peak - noise) * 0.60);
-  tr.querySelector('[data-k=exit]').value = Math.round(noise + (peak - noise) * 0.35);
+  tr.querySelector('[data-k=enter]').value = dbShow(Math.round(noise + (peak - noise) * 0.60));
+  tr.querySelector('[data-k=exit]').value = dbShow(Math.round(noise + (peak - noise) * 0.35));
 };
 
 // ----- chart -----
@@ -175,7 +175,7 @@ function draw() {
   if (hoverX != null && hoverX > L && hoverX < W - R) {
     const t = t0 + (hoverX - L) / (W - L - R) * win;
     g.strokeStyle = mut; g.lineWidth = 1; g.beginPath(); g.moveTo(hoverX, T); g.lineTo(hoverX, H - B); g.stroke();
-    const lines = en.map(n => { let b = null; for (const s of buf[n]) if (!b || Math.abs(s[0] - t) < Math.abs(b[0] - t)) b = s; return b && b[1] ? `<span class="swatch" style="background:${PCOL(n)}"></span>P${n} ${dbfs(b[1]).toFixed(1)} dBFS` : null; }).filter(Boolean);
+    const lines = en.map(n => { let b = null; for (const s of buf[n]) if (!b || Math.abs(s[0] - t) < Math.abs(b[0] - t)) b = s; return b && b[1] ? `<span class="swatch" style="background:${PCOL(n)}"></span>P${n} ${dbfs(b[1]).toFixed(1)} ${levelUnit()}` : null; }).filter(Boolean);
     tip.innerHTML = `<div class="muted">−${(now - t).toFixed(1)} s</div>` + lines.join('<br>');
     tip.style.display = 'block'; tip.style.left = Math.min(hoverX + 12, W - 160) + 'px'; tip.style.top = '10px';
   } else tip.style.display = 'none';
@@ -185,6 +185,7 @@ cv.addEventListener('mouseleave', () => { hoverX = null; draw(); });
 addEventListener('resize', draw);
 
 onMsg(m => {
+  if (m.type === 'snapshot' && App.local && !$('#localnote')) document.querySelector('.grid').insertAdjacentHTML('afterbegin', '<section class="card c12" id="localnote"><b>Gate debug needs the gate on USB.</b> This base reaches the gate over LoRa, so there is no live signal here. Plug the gate into a computer running <span class="mono">server/lapserver.py</span> to tune thresholds, or send settings from the <a href="/base">Base station</a> page.</section>');
   if (m.type === 'snapshot') { (m.term || []).forEach(logLine); lastLevels = m.gate?.levels || null; pilotRows(); infoCards(); }
   else if (m.type === 'cfg') pilotRows();
   else if (m.type === 'term') logLine(m);
@@ -199,5 +200,6 @@ onMsg(m => {
   }
 });
 setInterval(() => { if (cal) calSample(0); }, 250);
+setInterval(() => { document.querySelectorAll('.unit').forEach(e => e.textContent = levelUnit()); document.querySelectorAll('.u2').forEach(e => e.textContent = levelShort()); }, 1000);
 </script>
 </body></html>

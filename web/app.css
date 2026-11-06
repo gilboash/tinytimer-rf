@@ -60,3 +60,6 @@ label.check { display:inline-flex; gap:6px; align-items:center; color:var(--ink2
 .pilotbtn.sel { background:var(--grid); }
 .help { font-size:13px; color:var(--ink2); margin-top:8px; }
 .cross { color:var(--good); font-weight:600; }
+
+.logo { height:46px; width:auto; border-radius:6px; display:block; }
+header h1 { letter-spacing:.01em; }

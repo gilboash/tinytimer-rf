@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>tinytimer · Base station</title><link rel="icon" href="/breaking_carbon.jpg"><link rel="stylesheet" href="/app.css"></head>
+<body>
+<div class="wrap"><div class="grid">
+  <section class="card c12">
+    <div class="row" style="justify-content:space-between">
+      <div><h2 style="margin:0">Base station</h2>
+        <div class="big" id="state">–</div>
+        <div class="muted" id="stateNote"></div></div>
+      <div class="mono ink2" id="radio" style="text-align:right"></div>
+    </div>
+    <div class="row" style="margin-top:14px;gap:28px" id="tiles"></div>
+  </section>
+
+  <section class="card c6">
+    <div class="row" style="justify-content:space-between"><h2 style="margin:0">Signal strength at the base (dBm)</h2>
+      <label class="check">Window <select id="win"><option value="120">2 min</option><option value="600" selected>10 min</option><option value="3600">1 h</option></select></label></div>
+    <div style="position:relative"><canvas id="rssi" height="190"></canvas></div>
+    <div class="help">One point per packet heard from the gate. Pass packets are filled, status packets hollow.</div>
+  </section>
+  <section class="card c6">
+    <h2>Signal-to-noise (dB)</h2>
+    <div style="position:relative"><canvas id="snr" height="190"></canvas></div>
+    <div class="help">SF7 demodulates down to about −7.5 dB; below roughly 0 dB expect lost packets.</div>
+  </section>
+
+  <section class="card c12">
+    <div class="row" style="justify-content:space-between"><h2 style="margin:0">Pilots and thresholds</h2><span class="muted" id="gateHeard">no status heard yet</span></div>
+    <table style="margin-top:8px"><thead><tr><th>Pilot</th><th>Channel</th><th class="num">Enter <span class="u2">dB</span></th><th class="num">Exit <span class="u2">dB</span></th><th>Gate has</th><th class="num" title="highest level seen while measuring noise">Noise <span class="u2">dB</span></th><th class="num" title="highest level seen while measuring the peak">Peak <span class="u2">dB</span></th><th></th></tr></thead>
+    <tbody id="prows"></tbody></table>
+    <div class="row" style="margin-top:12px">
+      <button id="calNoise">1. Measure noise</button>
+      <button id="calPeak">2. Measure peak</button>
+      <button id="calApply" class="primary" disabled>3. Fill suggested thresholds</button>
+      <button id="sendAll">Send all to gate</button>
+      <button id="saveGate" title="Also store the settings in the gate's flash so it boots into them">Save on gate flash</button>
+      <span class="muted" id="cmsg"></span>
+    </div>
+    <div class="help"><b>Noise:</b> quads off or far away, press, wait ~7 s. <b>Peak:</b> press, then hold a powered quad in the gate (or fly through) for about 4 s &mdash; do each pilot in turn, or all together if they fly at once. Suggested thresholds sit 35% / 60% of the way from noise to peak. Settings are sent over LoRa and retried until the gate confirms; “Gate has” shows what the gate last reported (a status every 15 s). Channel off = pilot not scanned.</div>
+  </section>
+
+  <section class="card c12">
+    <div class="row" style="justify-content:space-between"><h2 style="margin:0">Live levels over LoRa</h2>
+      <div class="row"><span class="muted" id="liveNote"></span><button id="liveBtn">Start live</button></div></div>
+    <div class="row" id="livechips" style="margin:8px 0"></div>
+    <canvas id="livechart" height="240"></canvas>
+    <div class="help">The gate sends a sample about every 0.4 s while this is on (the highest level since the last sample is plotted, so short spikes show). It stops by itself after a minute unless this page keeps it going. It uses a few percent of the radio's duty-cycle budget, so use it to tune thresholds and then switch it off. The selected pilot's enter / exit thresholds are drawn dashed.</div>
+  </section>
+
+  <section class="card c12">
+    <h2>Passes received over LoRa</h2>
+    <table><thead><tr><th>Heard</th><th>Pilot</th><th class="num">Count</th><th class="num">Lap</th><th class="num">Peak (dB)</th><th class="num" title="the strongest OTHER pilot around the crossing: leakage shows up here">Other seat</th><th class="num">Delay</th><th class="num">RSSI</th><th class="num">SNR</th></tr></thead>
+    <tbody id="passes"></tbody></table>
+    <div class="muted" id="nopass" style="padding:10px 0">Nothing yet. Use “Test pass” on the <a href="/gate">Gate debug</a> page or fly past the gate.</div>
+  </section>
+
+  <section class="card c12">
+    <h2>Base terminal</h2>
+    <div class="log mono" id="log"></div>
+    <div class="row" style="margin-top:8px"><input type="text" id="cmd" style="flex:1;min-width:200px" placeholder="base command, e.g. INFO   CFG * 1 5658 125 105">
+      <button id="send">Send</button></div>
+  </section>
+</div></div>
+
+<script src="/app.js"></script>
+<script>
+header('base'); connect();
+const passes = [];
+
+// ----- status -----
+function ago(t) { const s = Math.max(0, serverNow() - t); return s < 90 ? Math.round(s) + ' s' : Math.round(s / 60) + ' min'; }
+function render() {
+  const b = App.base || {}, d = App.devices || {};
+  let cls = 'bad', txt = 'Not connected', note = 'No base on USB. Plug in the S3 base station.';
+  if (d.base) {
+    const alive = b.last_hb && serverNow() - b.last_hb < 4;
+    if (!alive) { txt = 'No heartbeat'; note = d.base + ' is attached but silent.'; }
+    else if (b.last_rx && serverNow() - b.last_rx < 40) { cls = 'ok'; txt = 'Linked'; note = 'last packet from the gate ' + ago(b.last_rx) + ' ago'; }
+    else { cls = 'warn'; txt = 'Listening'; note = b.last_rx ? 'nothing from the gate for ' + ago(b.last_rx) : 'no packet from a gate yet (the gate sends a status every 15 s)'; }
+  }
+  const el = $('#state'); el.textContent = txt; el.style.color = cls === 'ok' ? 'var(--good)' : cls === 'warn' ? 'var(--warn)' : 'var(--bad)';
+  $('#stateNote').textContent = note;
+  const h = b.hello;
+  $('#radio').innerHTML = h ? `${h.freq} MHz · BW ${h.bw} kHz · SF${h.sf}<br>${esc(b.port || d.base || '')}` : '';
+  const tile = (n, l, c) => `<div><div class="big" style="font-size:26px;${c ? 'color:' + c : ''}">${n ?? '–'}</div><div class="muted">${l}</div></div>`;
+  $('#tiles').innerHTML =
+    tile(b.pass_pkts, 'pass packets') + tile(b.passes_new, 'new passes') + tile(b.passes_dup, 'repeats (ACK lost)') +
+    tile(b.status_pkts, 'status packets') + tile(b.bad, 'bad CRC', b.bad ? 'var(--bad)' : '') +
+    tile(b.cfg_tx, 'config confirmed') + (b.cfg_tx_fail ? tile(b.cfg_tx_fail, 'config not confirmed', 'var(--bad)') : '') + (b.errors && b.errors.length ? tile(b.errors.length, 'radio errors', 'var(--bad)') : '');
+  gateHeard();
+}
+let gateText = '';
+function gateHeard() {
+  const st = Object.values(App.status || {})[0];
+  $('#gateHeard').innerHTML = st ? `gate ${st.gate} · heard ${ago(st.srv_t)} ago · gate clock ${fmt(st.ms)} · min lap ${st.minlap} ms · ` +
+    `<span style="${st.dropped ? 'color:var(--warn)' : ''}">${st.dropped} passes given up on</span>` : 'no status heard yet';
+  prows();
+}
+
+// ----- pilots and thresholds -----
+const sugg = {};   // n -> [enter, exit]
+function calCell(kind, n) {
+  const c = App.cal && App.cal[kind]; if (!c || !c.hi[n - 1]) return '–';
+  return dbShow(c.hi[n - 1]).toFixed(1);
+}
+function prows() {
+  if (!App.cfg) return;
+  const act = document.activeElement;
+  if (act && act.closest('#prows') && (act.tagName === 'INPUT' || act.tagName === 'SELECT')) return;
+  const st = Object.values(App.status || {})[0];
+  $('#prows').innerHTML = App.cfg.pilots.map(p => {
+    const g = st && st.pilots[p.n - 1];
+    const want = p.enabled ? p.freq : 0;
+    let has = '<span class="muted">–</span>';
+    if (g) {
+      const ok = g.f === want && (!want || (g.e === p.enter && g.x === p.exit));
+      has = `${g.f ? g.f : 'off'}${g.f ? ` ${dbShow(g.e)}/${dbShow(g.x)}` : ''} ${ok ? '<span class="tag good">in sync</span>' : '<span class="tag" style="background:color-mix(in srgb,var(--warn) 25%,transparent);color:var(--warn)">differs</span>'}`;
+    }
+    const sg = sugg[p.n];
+    return `<tr data-n="${p.n}"><td><span class="swatch" style="background:${PCOL(p.n)}"></span>${esc(p.name)}</td>
+      <td><select data-k="freq"><option value="0" ${!p.enabled ? 'selected' : ''}>off</option>${RACEBAND.map((f, i) => `<option value="${f}" ${p.enabled && f === p.freq ? 'selected' : ''}>R${i + 1} ${f}</option>`).join('')}</select></td>
+      <td class="num"><input type="number" step="0.25" data-k="enter" value="${dbShow(sg ? sg[0] : p.enter)}"></td>
+      <td class="num"><input type="number" step="0.25" data-k="exit" value="${dbShow(sg ? sg[1] : p.exit)}"></td>
+      <td>${has}</td><td class="num">${calCell('noise', p.n)}</td><td class="num">${calCell('peak', p.n)}</td>
+      <td><button data-send>Send</button></td></tr>`;
+  }).join('');
+}
+function rowBody(tr) {
+  const n = +tr.dataset.n, f = +$('[data-k=freq]', tr).value;
+  const cur = App.cfg.pilots[n - 1];
+  return { n, enabled: f > 0, freq: f || cur.freq, enter: fromDb(+$('[data-k=enter]', tr).value), exit: fromDb(+$('[data-k=exit]', tr).value) };
+}
+async function sendRow(tr) {
+  const b = rowBody(tr);
+  if (!(b.exit >= 1 && b.exit < b.enter && b.enter <= 254)) { $('#cmsg').textContent = `P${b.n}: exit must be below enter`; return; }
+  const r = await post('/api/pilot', Object.assign({ via: 'lora' }, b));  // the Mac server would otherwise use the gate's USB
+  delete sugg[b.n];
+  $('#cmsg').textContent = r.error || `P${b.n} sent, waiting for the gate to confirm`;
+}
+$('#prows').addEventListener('click', e => { const tr = e.target.closest('tr'); if (tr && e.target.matches('[data-send]')) sendRow(tr); });
+$('#sendAll').onclick = async () => { for (const tr of $('#prows').children) await sendRow(tr); $('#cmsg').textContent = 'all sent, waiting for the gate to confirm'; };
+$('#saveGate').onclick = async () => { await post('/api/gate/save'); $('#cmsg').textContent = 'save requested, sent to the gate'; };
+function cal(kind, btn) {
+  btn.disabled = true; const t = btn.textContent; btn.textContent = 'measuring…';
+  post('/api/gate/cal', { kind, secs: 4 });
+  setTimeout(() => { btn.disabled = false; btn.textContent = t; }, 8000);
+}
+$('#calNoise').onclick = e => cal('noise', e.target); $('#calPeak').onclick = e => cal('peak', e.target);
+function calReady() {
+  const nz = App.cal && App.cal.noise, pk = App.cal && App.cal.peak;
+  $('#calApply').disabled = !(nz && pk);
+}
+$('#calApply').onclick = () => {
+  const nz = App.cal.noise, pk = App.cal.peak; let weak = [];
+  App.cfg.pilots.forEach(p => {
+    const lo = nz.hi[p.n - 1], hi = pk.hi[p.n - 1];
+    if (!lo || !hi) return;
+    if (hi - lo < 8) { weak.push('P' + p.n); return; }
+    sugg[p.n] = [Math.round(lo + 0.6 * (hi - lo)), Math.round(lo + 0.35 * (hi - lo))];
+  });
+  prows();
+  $('#cmsg').textContent = 'thresholds filled in below, press Send (or Send all)' + (weak.length ? `; no clear peak for ${weak.join(', ')}` : '');
+};
+
+// ----- passes -----
+function addPass(m) {
+  if (m.source !== 'lora') return;
+  passes.unshift(m); passes.length = Math.min(passes.length, 40); renderPasses();
+}
+function renderPasses() {
+  $('#nopass').style.display = passes.length ? 'none' : '';
+  $('#passes').innerHTML = passes.map(m => `<tr><td>${new Date(wall(m.t)).toLocaleTimeString()}</td>` +
+    `<td><span class="swatch" style="background:${PCOL(m.pilot)}"></span>${esc(App.cfg && App.cfg.pilots[m.pilot - 1] ? App.cfg.pilots[m.pilot - 1].name : 'P' + m.pilot)}</td>` +
+    `<td class="num">${m.count}</td><td class="num">${m.lap_ms ? fmt(m.lap_ms) : '–'}</td><td class="num">${m.peak_dbfs.toFixed(1)}</td><td class="num">${m.xp ? `<span style="${m.xl >= m.peak * 0.5 ? 'color:var(--warn);font-weight:600' : ''}"><span class="swatch" style="background:${PCOL(m.xp)}"></span>P${m.xp} ${dbShow(m.xl).toFixed(1)}</span>` : '–'}</td>` +
+    `<td class="num">${m.age_s != null ? (m.age_s * 1000).toFixed(0) + ' ms' : '–'}</td><td class="num">${m.rssi ?? '–'}</td><td class="num">${m.snr ?? '–'}</td></tr>`).join('');
+}
+
+// ----- link charts -----
+function css(v) { return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
+function chart(cv, idx, lo, hi, step, unit) {
+  const dpr = devicePixelRatio || 1, W = cv.clientWidth, H = 190;
+  cv.width = W * dpr; cv.height = H * dpr; cv.style.height = H + 'px';
+  const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const L = 40, R = 8, T = 8, B = 22, win = +$('#win').value, now = serverNow();
+  const x = t => L + (1 - (now - t) / win) * (W - L - R), y = v => T + (1 - (v - lo) / (hi - lo)) * (H - T - B);
+  g.font = '11px ui-monospace,Menlo,monospace'; g.textBaseline = 'middle'; g.fillStyle = css('--muted'); g.strokeStyle = css('--grid'); g.lineWidth = 1;
+  for (let v = lo; v <= hi; v += step) { g.beginPath(); g.moveTo(L, y(v)); g.lineTo(W - R, y(v)); g.stroke(); g.textAlign = 'right'; g.fillText(v, L - 6, y(v)); }
+  g.textAlign = 'center'; g.textBaseline = 'top';
+  for (let i = 0; i <= 4; i++) { const t = now - win * (1 - i / 4); g.fillText(i === 4 ? 'now' : '−' + (win * (4 - i) / 4 >= 120 ? Math.round(win * (4 - i) / 240) + ' min' : Math.round(win * (4 - i) / 4) + ' s'), L + i * (W - L - R) / 4, H - B + 6); }
+  const pts = App.link.filter(r => r[idx] != null && now - r[0] <= win);
+  if (!pts.length) { g.fillStyle = css('--muted'); g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('no packets in this window', W / 2, H / 2); return; }
+  const col = css('--accent'); g.strokeStyle = col; g.lineWidth = 1.5; g.beginPath();
+  pts.forEach((r, i) => { const px = x(r[0]), py = Math.min(Math.max(y(r[idx]), T), H - B); i ? g.lineTo(px, py) : g.moveTo(px, py); }); g.stroke();
+  pts.forEach(r => {
+    g.beginPath(); g.arc(x(r[0]), Math.min(Math.max(y(r[idx]), T), H - B), 3.5, 0, 7);
+    g.fillStyle = r[3] === 'pass' ? col : css('--surface'); g.fill(); g.strokeStyle = col; g.lineWidth = 1.5; g.stroke();
+  });
+}
+function charts() { chart($('#rssi'), 1, -130, -20, 20); chart($('#snr'), 2, -20, 20, 10); }
+$('#win').onchange = charts; addEventListener('resize', charts);
+
+
+// ----- live levels over LoRa -----
+let liveOn = false, liveTimer = null, liveSel = store.get('liveSel', 1), liveLast = 0;
+const lbuf = [];   // [t, [level per pilot (max of current and hold)]]
+function liveUi() {
+  $('#liveBtn').textContent = liveOn ? 'Stop live' : 'Start live';
+  $('#liveBtn').className = liveOn ? 'danger' : '';
+  const age = (Date.now() - liveLast) / 1000;
+  $('#liveNote').textContent = !liveOn ? '' : (liveLast && age < 3 ? 'receiving' : 'waiting for the gate…');
+}
+$('#liveBtn').onclick = () => {
+  liveOn = !liveOn;
+  clearInterval(liveTimer);
+  if (liveOn) { post('/api/gate/live', { secs: 60 }); liveTimer = setInterval(() => post('/api/gate/live', { secs: 60 }), 45000); }
+  else post('/api/gate/live', { secs: 0 });
+  liveUi();
+};
+addEventListener('pagehide', () => { if (liveOn) navigator.sendBeacon && navigator.sendBeacon('/api/gate/live', JSON.stringify({ secs: 0 })); });
+function liveChips() {
+  $('#livechips').innerHTML = [1, 2, 3, 4, 5, 6, 7, 8].map(n => `<button data-sel="${n}" class="pilotbtn ${n === liveSel ? 'sel' : ''}" style="--c:${PCOL(n)}">P${n}</button>`).join('');
+}
+$('#livechips').onclick = e => { if (e.target.dataset.sel) { liveSel = +e.target.dataset.sel; store.set('liveSel', liveSel); liveChips(); liveDraw(); } };
+function liveDraw() {
+  const cv = $('#livechart'), dpr = devicePixelRatio || 1, W = cv.clientWidth, H = 240;
+  cv.width = W * dpr; cv.height = H * dpr; cv.style.height = H + 'px';
+  const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const L = 44, R = 8, T = 8, B = 22, win = 60, now = Date.now() / 1000, t0 = now - win;
+  const en = (App.cfg ? App.cfg.pilots.filter(p => p.enabled).map(p => p.n) : []);
+  const sp = App.cfg && App.cfg.pilots[liveSel - 1];
+  let lo = 1e9, hi = -1e9;
+  for (const [t, v] of lbuf) if (t >= t0) for (const n of en) if (v[n - 1]) { const d = dbfs(v[n - 1]); lo = Math.min(lo, d); hi = Math.max(hi, d); }
+  if (sp && sp.enabled) { lo = Math.min(lo, dbfs(sp.exit)); hi = Math.max(hi, dbfs(sp.enter)); }
+  if (lo > hi) { lo = 0; hi = 40; }
+  lo = Math.floor(lo - 2); hi = Math.ceil(hi + 3); if (hi - lo < 20) hi = lo + 20;
+  const x = t => L + (t - t0) / win * (W - L - R), y = d => T + (1 - (d - lo) / (hi - lo)) * (H - T - B);
+  g.font = '11px ui-monospace,Menlo,monospace'; g.lineWidth = 1; g.strokeStyle = css('--grid'); g.fillStyle = css('--muted');
+  g.textBaseline = 'middle'; g.textAlign = 'right';
+  for (let k = 0; k <= 4; k++) { const d = lo + (hi - lo) * k / 4; g.beginPath(); g.moveTo(L, y(d)); g.lineTo(W - R, y(d)); g.stroke(); g.fillText(d.toFixed(0), L - 6, y(d)); }
+  g.textAlign = 'center'; g.textBaseline = 'top';
+  for (let s = 0; s <= win; s += 15) g.fillText(s === win ? 'now' : '−' + (win - s) + ' s', x(t0 + s), H - B + 6);
+  for (const n of en) {
+    const sel = n === liveSel;
+    g.strokeStyle = css('--p' + n); g.lineWidth = sel ? 2.5 : 1.2; g.globalAlpha = sel ? 1 : .7; g.beginPath(); let st = false;
+    for (const [t, v] of lbuf) { if (t < t0 - 1 || !v[n - 1]) continue; const px = x(t), py = y(dbfs(v[n - 1])); st ? g.lineTo(px, py) : g.moveTo(px, py); st = true; }
+    g.stroke(); g.globalAlpha = 1;
+  }
+  if (sp && sp.enabled) {
+    g.strokeStyle = css('--p' + liveSel); g.lineWidth = 1.5;
+    for (const [v, dash] of [[sp.enter, [8, 5]], [sp.exit, [2, 4]]]) { g.setLineDash(dash); g.beginPath(); g.moveTo(L, y(dbfs(v))); g.lineTo(W - R, y(dbfs(v))); g.stroke(); }
+    g.setLineDash([]);
+  }
+  if (!lbuf.length) { g.fillStyle = css('--muted'); g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('press Start live', W / 2, H / 2); }
+}
+liveChips();
+
+// ----- terminal -----
+function logLine(m) {
+  if (!/base/.test(m.src)) return;
+  const el = $('#log'), stick = el.scrollTop + el.clientHeight >= el.scrollHeight - 20;
+  const d = document.createElement('div'); d.className = m.src.startsWith('tx') ? 'tx' : '';
+  d.textContent = new Date(wall(m.t)).toLocaleTimeString() + '  ' + (m.src.startsWith('tx') ? '> ' : '') + m.line;
+  el.appendChild(d); while (el.childElementCount > 300) el.firstChild.remove();
+  if (stick) el.scrollTop = el.scrollHeight;
+}
+function sendCmd() { const v = $('#cmd').value.trim(); if (!v) return; post('/api/base/cmd', { line: v }).then(r => { if (r.error) logLine({ src: 'server base', t: Date.now() / 1000, line: r.error }); }); $('#cmd').value = ''; }
+$('#send').onclick = sendCmd; $('#cmd').onkeydown = e => { if (e.key === 'Enter') sendCmd(); };
+
+onMsg(m => {
+  if (m.type === 'snapshot') {
+    (m.term || []).forEach(logLine);
+    passes.length = 0; (m.recent || []).filter(p => p.source === 'lora').slice(-40).reverse().forEach(p => passes.push(p));
+    renderPasses(); prows(); calReady(); render(); charts();
+  } else if (m.type === 'term') logLine(m);
+  else if (m.type === 'pass') addPass(m);
+  else if (m.type === 'base' || m.type === 'devices' || m.type === 'status') render();
+  else if (m.type === 'link') charts();
+  else if (m.type === 'levels' && m.d.live) { liveLast = Date.now(); lbuf.push([Date.now() / 1000, m.d.l.map((v, i) => Math.max(v, m.d.h ? m.d.h[i] : 0))]); if (lbuf.length > 400) lbuf.splice(0, 100); liveUi(); liveDraw(); }
+  else if (m.type === 'cfg') { prows(); liveDraw(); }
+  else if (m.type === 'cal') { calReady(); prows(); }
+});
+setInterval(() => { liveUi(); render(); charts(); document.querySelectorAll('.u2').forEach(e => e.textContent = levelShort()); }, 1000);
+</script>
+</body></html>
