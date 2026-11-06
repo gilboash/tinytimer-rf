@@ -28,7 +28,7 @@ nav a.on { background:var(--surface); color:var(--ink); box-shadow:0 0 0 1px var
 .chip { display:inline-flex; align-items:center; gap:6px; padding:3px 10px; border-radius:999px; background:var(--surface); box-shadow:0 0 0 1px var(--grid); font-size:13px; color:var(--ink2); }
 .dot { width:9px; height:9px; border-radius:50%; background:var(--muted); display:inline-block; }
 .dot.ok { background:var(--good); } .dot.bad { background:var(--bad); } .dot.warn { background:var(--warn); }
-.grid { display:grid; gap:16px; grid-template-columns: repeat(12, 1fr); }
+.grid { display:grid; gap:16px; grid-template-columns: repeat(12, minmax(0, 1fr));  /* minmax(0,..): a wide child must not stretch the page past a phone's width */ }
 .card { background:var(--surface); border-radius:10px; padding:16px; box-shadow:0 0 0 1px var(--grid); min-width:0; }
 .c12 { grid-column: span 12; } .c8 { grid-column: span 8; } .c7 { grid-column: span 7; } .c6 { grid-column: span 6; } .c5 { grid-column: span 5; } .c4 { grid-column: span 4; }
 @media (max-width: 860px) { .c8,.c7,.c6,.c5,.c4 { grid-column: span 12; } }
@@ -63,3 +63,6 @@ label.check { display:inline-flex; gap:6px; align-items:center; color:var(--ink2
 
 .logo { height:46px; width:auto; border-radius:6px; display:block; }
 header h1 { letter-spacing:.01em; }
+
+html, body { max-width:100%; overflow-x:hidden; }
+.chips { max-width:100%; }

@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 470" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+  <style>.t{font-size:14px;fill:#222}.m{font-family:ui-monospace,Menlo,monospace;font-size:13px;fill:#222}.h{font-size:16px;font-weight:700;fill:#0b0b0b}.n{font-size:12px;fill:#777}.ok{fill:#e8f1fc;stroke:#2a78d6;stroke-width:1.5}.no{fill:#f2f2ef;stroke:#bbb;stroke-width:1.2}.warn{fill:#fff4d9;stroke:#d9a400;stroke-width:1.5}</style>
+  <rect width="900" height="470" fill="#fafaf8"/>
+  <text class="h" x="30" y="32">Gate: Wio-SX1262 soldered under the XIAO ESP32-C5</text>
+  <text class="n" x="30" y="52">The two boards share the same pin positions. USB-C of the C5 at the bottom, pin rows read top to bottom.</text>
+  <!-- left row -->
+  <text class="h" x="40" y="88">Left row</text>
+  <text class="n" x="40" y="104">C5 pin (GPIO)</text><text class="n" x="250" y="104">Wio-SX1262 pin</text><text class="n" x="410" y="104">signal</text>
+  <g>
+    <rect class="no" x="30" y="114" width="190" height="34" rx="6"/><text class="m" x="42" y="136">D6 (GPIO11)</text><text class="m" x="250" y="136">not used</text>
+    <rect class="no" x="30" y="152" width="190" height="34" rx="6"/><text class="m" x="42" y="174">D5 (GPIO24)</text><text class="m" x="250" y="174">not used</text>
+    <rect class="ok" x="30" y="190" width="190" height="34" rx="6"/><text class="m" x="42" y="212">D4 (GPIO23)</text><text class="m" x="250" y="212">RF-SW</text><text class="t" x="410" y="212">RX enable of the antenna switch</text>
+    <rect class="ok" x="30" y="228" width="190" height="34" rx="6"/><text class="m" x="42" y="250">D3 (GPIO7)</text><text class="m" x="250" y="250">NSS</text><text class="t" x="410" y="250">SPI chip select</text>
+    <rect class="warn" x="30" y="266" width="190" height="34" rx="6"/><text class="m" x="42" y="288">D2 (GPIO25)</text><text class="m" x="250" y="288">RST</text><text class="t" x="410" y="288">wired, but does not reset the chip (see Troubleshooting)</text>
+    <rect class="ok" x="30" y="304" width="190" height="34" rx="6"/><text class="m" x="42" y="326">D1 (GPIO0)</text><text class="m" x="250" y="326">BUSY</text><text class="t" x="410" y="326">radio busy flag</text>
+    <rect class="ok" x="30" y="342" width="190" height="34" rx="6"/><text class="m" x="42" y="364">D0 (GPIO1)</text><text class="m" x="250" y="364">DIO1</text><text class="t" x="410" y="364">radio interrupt line (polled)</text>
+  </g>
+  <!-- right row -->
+  <text class="h" x="40" y="404">Right row</text>
+  <text class="m" x="40" y="428">D8 SCK   D9 MISO   D10 MOSI   (GPIO 8 / 9 / 10)  &#8594;  SCK / MISO / MOSI</text>
+  <text class="m" x="40" y="450">3V3 &#8594; 3V3      GND &#8594; GND      5V &#8594; VIN</text>
+  <!-- legend -->
+  <rect class="ok" x="640" y="60" width="16" height="16" rx="3"/><text class="n" x="662" y="73">signal wire in use</text>
+  <rect class="warn" x="640" y="84" width="16" height="16" rx="3"/><text class="n" x="662" y="97">connected, no effect</text>
+  <rect class="no" x="640" y="108" width="16" height="16" rx="3"/><text class="n" x="662" y="121">not used</text>
+</svg>
