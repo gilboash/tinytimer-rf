@@ -125,6 +125,16 @@ static uint16_t last_cfg_seq = 0xFFFF;
 static bool have_cfg_seq;
 static uint32_t last_status_ms;
 static volatile bool status_now;
+static volatile bool cfg_ack_pending;
+static uint16_t cfg_ack_seq;
+static bool cal_active;
+static uint32_t cal_end_ms;
+static uint16_t cal_seq;
+static uint8_t cal_kind;
+static uint32_t live_until_ms, last_live_ms;  // live level streaming window (0 = off)
+static uint16_t live_seq;
+static volatile bool sync_pending;
+static uint16_t sync_seq;
 static portMUX_TYPE smux = portMUX_INITIALIZER_UNLOCKED;
 
 static uint32_t now_ms() { return (uint32_t)(esp_timer_get_time() / 1000); }
@@ -136,11 +146,31 @@ static bool packet_ready() {
     return (radio->getIrqFlags() & (1UL << RADIOLIB_IRQ_RX_DONE)) != 0;
 }
 
+/* Defensive: the module's RST is not reachable from the C5 header, so the chip
+ * keeps whatever state it was last left in. A stale "command timeout" in its
+ * status byte makes RadioLib return SPI_CMD_TIMEOUT (-705) from the next command
+ * and startReceive() give up; a throwaway standby clears it. (If RX ever stays
+ * dead with err -705, power-cycle the module: that is the only reset.) */
+static int16_t start_rx() {
+    radio->standby();
+    int16_t r = radio->startReceive();
+    if (r != RADIOLIB_ERR_NONE) {
+        radio->standby();
+        r = radio->startReceive();
+    }
+    return r;
+}
+
 static void transmit(const void *buf, size_t len) {
+    /* See start_rx(): clear any stale status before the first command. */
+    radio->standby();
     int16_t r = radio->transmit((const uint8_t *)buf, len);
     st.tx++;
     if (r != RADIOLIB_ERR_NONE) st.err = r;
-    radio->startReceive();
+    int16_t r2 = start_rx();
+    if (r != RADIOLIB_ERR_NONE || r2 != RADIOLIB_ERR_NONE)
+        link_printf("LORADBG tx=%d startRx=%d busy=%d dio1=%d\n", r, r2, gpio_get_level((gpio_num_t)LORA_BUSY),
+                    gpio_get_level((gpio_num_t)LORA_DIO1));
 }
 
 static void send_pass_packet(uint32_t now) {
@@ -162,7 +192,7 @@ static void send_pass_packet(uint32_t now) {
         e.attempts++;
         e.next_ms = now + RETRY_BASE_MS + (uint32_t)e.attempts * RETRY_STEP_MS;
         e.sent_seq = pk.seq;
-        pk.p[pk.n++] = (ll_pass_t){e.p.pilot, e.p.count, e.p.pass_ms, e.p.lap_ms, e.p.peak};
+        pk.p[pk.n++] = (ll_pass_t){e.p.pilot, e.p.count, e.p.pass_ms, e.p.lap_ms, e.p.peak, e.p.xp, e.p.xl};
     }
     if (!pk.n) return;
     pk.sent_ms = now_ms(); /* as late as possible: it is the age reference */
@@ -178,6 +208,8 @@ static void send_status() {
     s.min_lap_ms_div10 = (uint16_t)(gate_min_lap_ms() / 10);
     s.dropped = (uint16_t)st.dropped;
     for (unsigned n = 1; n <= LL_MAX_PILOTS; n++) gate_get_pilot(n, &s.pilot[n - 1]);
+    s.flags = gate_metric_is_snr() ? LL_STATUS_SNR : 0;
+    s.meta_rev = gate_meta_rev();
     s.sent_ms = now_ms();
     last_status_ms = s.sent_ms;
     transmit(&s, sizeof(s));
@@ -187,7 +219,7 @@ static void handle_rx() {
     uint8_t buf[64];
     size_t len = radio->getPacketLength();
     if (len == 0 || len > sizeof(buf)) {
-        radio->startReceive();
+        start_rx();
         return;
     }
     int16_t r = radio->readData(buf, len);
@@ -208,6 +240,10 @@ static void handle_rx() {
         } else if (buf[0] == LL_MAGIC_CFG && len == sizeof(ll_cfg_pkt_t) && buf[1] == LL_VERSION) {
             ll_cfg_pkt_t c;
             memcpy(&c, buf, sizeof(c));
+            if (c.gate_id == gate_id() || c.gate_id == 0xFF) {
+                cfg_ack_seq = c.seq;  // acknowledge repeats too: our ACK may be what got lost
+                cfg_ack_pending = true;
+            }
             if ((c.gate_id == gate_id() || c.gate_id == 0xFF) && !(have_cfg_seq && c.seq == last_cfg_seq)) {
                 have_cfg_seq = true;
                 last_cfg_seq = c.seq;
@@ -218,13 +254,122 @@ static void handle_rx() {
                             c.cfg.enter_at, c.cfg.exit_at, ok);
                 status_now = true;
             }
+        } else if (buf[0] == LL_MAGIC_NAME && len == sizeof(ll_name_pkt_t) && buf[1] == LL_VERSION) {
+            ll_name_pkt_t q;
+            memcpy(&q, buf, sizeof(q));
+            if (q.gate_id == gate_id() || q.gate_id == 0xFF) {
+                char nm[LL_NAME_LEN + 1];
+                memcpy(nm, q.name, LL_NAME_LEN);
+                nm[LL_NAME_LEN] = 0;
+                gate_set_name(q.pilot, nm);
+                cfg_ack_seq = q.seq;
+                cfg_ack_pending = true;
+                status_now = true;
+            }
+        } else if (buf[0] == LL_MAGIC_SET && len == sizeof(ll_set_pkt_t) && buf[1] == LL_VERSION) {
+            ll_set_pkt_t q;
+            memcpy(&q, buf, sizeof(q));
+            if (q.gate_id == gate_id() || q.gate_id == 0xFF) {
+                gate_race_t r = {q.laps, q.flags, q.countdown};
+                gate_set_race(&r);
+                gate_set_min_lap_ms(q.min_lap_ms);
+                cfg_ack_seq = q.seq;
+                cfg_ack_pending = true;
+                status_now = true;
+            }
+        } else if (buf[0] == LL_MAGIC_SYNCREQ && len == sizeof(ll_syncreq_pkt_t) && buf[1] == LL_VERSION) {
+            ll_syncreq_pkt_t q;
+            memcpy(&q, buf, sizeof(q));
+            if (q.gate_id == gate_id() || q.gate_id == 0xFF) {
+                sync_seq = q.seq;
+                sync_pending = true;
+            }
+        } else if (buf[0] == LL_MAGIC_LIVEREQ && len == sizeof(ll_live_req_t) && buf[1] == LL_VERSION) {
+            ll_live_req_t q;
+            memcpy(&q, buf, sizeof(q));
+            if (q.gate_id == gate_id() || q.gate_id == 0xFF) {
+                uint8_t secs = q.secs > 60 ? 60 : q.secs;  // a few % of the duty-cycle budget: keep it short
+                live_until_ms = secs ? (now_ms() + secs * 1000u) | 1 : 0;
+            }
+        } else if (buf[0] == LL_MAGIC_CAL && len == sizeof(ll_cal_req_t) && buf[1] == LL_VERSION) {
+            ll_cal_req_t q;
+            memcpy(&q, buf, sizeof(q));
+            if ((q.gate_id == gate_id() || q.gate_id == 0xFF) && !cal_active) {
+                gate_cal_start();
+                cal_active = true;
+                cal_seq = q.seq;
+                cal_kind = q.kind;
+                cal_end_ms = now_ms() + (uint32_t)(q.secs < 1 ? 1 : q.secs > 10 ? 10 : q.secs) * 1000;
+            }
         }
     }
-    radio->startReceive();
+    start_rx();
+}
+
+static void send_cfg_ack() {
+    ll_ack_pkt_t a = {};
+    a.magic = LL_MAGIC_ACK;
+    a.version = LL_VERSION;
+    a.gate_id = gate_id();
+    a.seq = cfg_ack_seq;
+    transmit(&a, sizeof(a));
+}
+
+static void send_sync() {
+    ll_sync_pkt_t y = {};
+    y.magic = LL_MAGIC_SYNC;
+    y.version = LL_VERSION;
+    y.gate_id = gate_id();
+    y.seq = sync_seq;
+    y.meta_rev = gate_meta_rev();
+    gate_race_t r;
+    gate_get_race(&r);
+    y.laps = r.laps;
+    y.flags = r.flags;
+    y.countdown = r.countdown;
+    y.min_lap_ms = gate_min_lap_ms();
+    for (unsigned n = 1; n <= LL_MAX_PILOTS; n++) {
+        char nm[LL_NAME_LEN + 1];
+        gate_get_name(n, nm);
+        memcpy(y.name[n - 1], nm, LL_NAME_LEN);
+    }
+    transmit(&y, sizeof(y));
+}
+
+static void send_live() {
+    gate_view_t v;
+    gate_view(&v);
+    ll_live_pkt_t p = {};
+    p.magic = LL_MAGIC_LIVE;
+    p.version = LL_VERSION;
+    p.gate_id = gate_id();
+    p.seq = ++live_seq;
+    p.crossing = v.crossing;
+    for (int i = 0; i < LL_MAX_PILOTS; i++) {
+        bool on = (v.enabled >> i) & 1;
+        p.level[i] = on ? v.level[i] : 0;
+        p.hold[i] = on ? v.hold[i] : 0;
+    }
+    transmit(&p, sizeof(p));
+}
+
+static void send_cal_result() {
+    gate_cal_t c;
+    gate_cal_finish(&c);
+    ll_cal_res_t r = {};
+    r.magic = LL_MAGIC_CALRES;
+    r.version = LL_VERSION;
+    r.gate_id = gate_id();
+    r.seq = cal_seq;
+    r.kind = cal_kind;
+    memcpy(r.lo, c.lo, sizeof(r.lo));
+    memcpy(r.avg, c.avg, sizeof(r.avg));
+    memcpy(r.hi, c.hi, sizeof(r.hi));
+    transmit(&r, sizeof(r));
 }
 
 static void lora_task(void *) {
-    radio->startReceive();
+    start_rx();
     for (;;) {
         gate_pass_t p;
         while (xQueueReceive(inq, &p, 0) == pdTRUE) {
@@ -242,6 +387,19 @@ static void lora_task(void *) {
         }
         if (packet_ready()) handle_rx();
         uint32_t now = now_ms();
+        if (cfg_ack_pending) {
+            cfg_ack_pending = false;
+            send_cfg_ack();
+        }
+        if (sync_pending) {
+            sync_pending = false;
+            send_sync();
+        }
+        if (live_until_ms && (int32_t)(now - live_until_ms) >= 0) live_until_ms = 0;
+        if (cal_active && (int32_t)(now - cal_end_ms) >= 0) {
+            cal_active = false;
+            send_cal_result();
+        }
         unsigned npend = 0;
         bool ready = false;
         for (int i = 0; i < PENDING_MAX; i++)
@@ -254,6 +412,9 @@ static void lora_task(void *) {
         else if ((status_now && now - last_status_ms >= STATUS_MIN_GAP_MS) || now - last_status_ms >= STATUS_PERIOD_MS) {
             status_now = false;
             send_status();
+        } else if (live_until_ms && now - last_live_ms >= 400) {  // passes and status go first
+            last_live_ms = now;
+            send_live();
         }
         vTaskDelay(pdMS_TO_TICKS(2));
     }
@@ -283,6 +444,50 @@ extern "C" esp_err_t lora_link_init(void) {
     st.up = 1;
     xTaskCreate(lora_task, "lora", 4096, NULL, 4, NULL);
     return ESP_OK;
+}
+
+/* Raw bring-up probe, independent of RadioLib: reset the chip, watch BUSY, ask
+ * it for its status and its version string over the same SPI path. */
+extern "C" void lora_link_diag(void) {
+    if (!hal) { link_text("DIAG no hal\n"); return; }
+    gpio_num_t cs = (gpio_num_t)LORA_CS, rst = (gpio_num_t)LORA_RST;
+    link_printf("DIAG pins sck=%d miso=%d mosi=%d cs=%d dio1=%d rst=%d busy=%d rxen=%d\n", LORA_SCK, LORA_MISO,
+                LORA_MOSI, LORA_CS, LORA_DIO1, LORA_RST, LORA_BUSY, LORA_RXEN);
+    link_printf("DIAG idle levels before reset: busy=%d dio1=%d miso=%d\n", gpio_get_level((gpio_num_t)LORA_BUSY),
+                gpio_get_level((gpio_num_t)LORA_DIO1), gpio_get_level((gpio_num_t)LORA_MISO));
+    /* Is BUSY driven by the chip, or just floating? Pull it each way and see. */
+    gpio_set_pull_mode((gpio_num_t)LORA_BUSY, GPIO_PULLDOWN_ONLY);
+    hal->delay(2);
+    int dn = gpio_get_level((gpio_num_t)LORA_BUSY);
+    gpio_set_pull_mode((gpio_num_t)LORA_BUSY, GPIO_PULLUP_ONLY);
+    hal->delay(2);
+    int up = gpio_get_level((gpio_num_t)LORA_BUSY);
+    gpio_set_pull_mode((gpio_num_t)LORA_BUSY, GPIO_FLOATING);
+    link_printf("DIAG BUSY with pulldown=%d, with pullup=%d (different = floating, nothing drives it)\n", dn, up);
+    hal->pinMode(LORA_RST, 0x03);
+    hal->digitalWrite(LORA_RST, 0);
+    hal->delay(5);
+    link_printf("DIAG busy while RST held low: %d\n", gpio_get_level((gpio_num_t)LORA_BUSY));
+    hal->digitalWrite(LORA_RST, 1);
+    int busy_ms = -1;
+    for (int i = 0; i < 200; i++) {
+        if (!gpio_get_level((gpio_num_t)LORA_BUSY)) { busy_ms = i; break; }
+        hal->delay(1);
+    }
+    link_printf("DIAG busy low %d ms after reset release (-1 = never)\n", busy_ms);
+    uint8_t tx1[2] = {0xC0, 0x00}, rx1[2] = {0, 0};
+    gpio_set_level(cs, 0);
+    hal->spiTransfer(tx1, 2, rx1);
+    gpio_set_level(cs, 1);
+    link_printf("DIAG GetStatus -> %02X %02X (a live chip answers xx 2x/3x/4x/5x, never FF FF or 00 00)\n", rx1[0], rx1[1]);
+    hal->delay(2);
+    for (int i = 0; i < 100 && gpio_get_level((gpio_num_t)LORA_BUSY); i++) hal->delay(1);
+    uint8_t tx2[9] = {0x1D, 0x03, 0x20, 0, 0, 0, 0, 0, 0}, rx2[9] = {};
+    gpio_set_level(cs, 0);
+    hal->spiTransfer(tx2, 9, rx2);
+    gpio_set_level(cs, 1);
+    link_printf("DIAG ReadRegister 0x0320 -> %02X %02X %02X %02X %02X %02X %02X (expect 53 58 31 32 36 .. = \"SX126\")\n", rx2[2], rx2[3], rx2[4],
+                rx2[5], rx2[6], rx2[7], rx2[8]);
 }
 
 extern "C" void lora_link_queue_pass(const gate_pass_t *p) {

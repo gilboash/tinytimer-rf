@@ -22,6 +22,8 @@ typedef struct {
 esp_err_t lora_link_init(void);
 void lora_link_queue_pass(const gate_pass_t *p);
 void lora_link_stats(lora_stats_t *s);
+/* Print a raw reset/BUSY/SPI probe of the radio chip (LORA DIAG). */
+void lora_link_diag(void);
 /* Send a STATUS now (rate limited). */
 void lora_link_request_status(void);
 

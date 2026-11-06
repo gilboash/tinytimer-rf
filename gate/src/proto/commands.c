@@ -101,7 +101,7 @@ static void gate_defaults(scan_config_t *c) {
     c->gate = true;
     c->gain_mode = RADIO_GAIN_MANUAL;
     c->gain = 45;
-    c->metrics_mode = METRICS_RSSI;
+    c->metrics_mode = METRICS_SNR; /* level above each channel's own noise floor: one threshold fits every pilot */
     gate_set_fft(c, 64);
     c->spec_every = 0;
     c->mode = PLAN_GROUP;
@@ -223,7 +223,7 @@ static bool gate_allowed(const char *line) {
                                         "FILTER AUTO", "MODE GROUP", "MODE SINGLE", "CONFIG SAVE",
                                         "CONFIG RESET", "RECAL", "LEVELFILTER MEDIAN", "LEVELFILTER EMA",
                                         "LEVELFILTER?", "PHYIDLE?", "GPIO?", "GATE?", "GATE RESET", "GATE SAVE", "LORA?", "STREAM?"};
-    static const char *const prefix[] = {"GAIN MANUAL ", "FFT ", "FILTER ", "IQCORR ", "PHYIDLE ", "THROTTLE ", "GPIO ", "PILOT ", "THRESH ", "GATE ", "STREAM ", "SIMPASS ", "LORA "};
+    static const char *const prefix[] = {"GAIN MANUAL ", "FFT ", "FILTER ", "IQCORR ", "PHYIDLE ", "THROTTLE ", "GPIO ", "PILOT ", "THRESH ", "NAME ", "RACESET ", "GATE ", "STREAM ", "SIMPASS ", "LORA "};
     for (unsigned j = 0; j < sizeof(exact) / sizeof(exact[0]); j++)
         if (!strcmp(line, exact[j])) return true;
     for (unsigned j = 0; j < sizeof(prefix) / sizeof(prefix[0]); j++)
@@ -313,14 +313,20 @@ static bool parse_channels(char *args, const profile_t *p, scan_config_t *c) {
 /* ---- Lap-timer commands (GATE mode) ---- */
 
 static void send_gate(void) {
-    reply_add("GATE {\"id\":%u,\"min_lap_ms\":%u,\"pilots\":[", gate_id(), (unsigned)gate_min_lap_ms());
+    gate_race_t rc;
+    gate_get_race(&rc);
+    reply_add("GATE {\"id\":%u,\"min_lap_ms\":%u,\"metric\":\"%s\",\"rev\":%u,\"race\":{\"laps\":%u,\"holeshot\":%u,\"countdown\":%u},\"pilots\":[",
+              gate_id(), (unsigned)gate_min_lap_ms(), gate_metric_is_snr() ? "snr" : "rssi", gate_meta_rev(), rc.laps,
+              (rc.flags & LL_SET_HOLESHOT) ? 1u : 0u, rc.countdown);
     gate_view_t v;
     gate_view(&v);
     for (unsigned n = 1; n <= GATE_SEATS; n++) {
         ll_pilot_cfg_t c = {0};
         gate_get_pilot(n, &c);
-        reply_add("%s{\"n\":%u,\"freq\":%u,\"enter\":%u,\"exit\":%u,\"count\":%u}", n > 1 ? "," : "", n,
-                  c.freq_mhz, c.enter_at, c.exit_at, v.count[n - 1]);
+        char nm[LL_NAME_LEN + 1];
+        gate_get_name(n, nm);
+        reply_add("%s{\"n\":%u,\"name\":\"%s\",\"freq\":%u,\"enter\":%u,\"exit\":%u,\"count\":%u}", n > 1 ? "," : "", n,
+                  nm, c.freq_mhz, c.enter_at, c.exit_at, v.count[n - 1]);
     }
     reply_add("]}\n");
     reply_send();
@@ -345,6 +351,17 @@ static bool handle_gate(char *line) {
         c.enter_at = (uint8_t)a;
         c.exit_at = (uint8_t)b;
         link_text(gate_set_pilot(n, &c) ? "OK\n" : "ERR thresh\n");
+    } else if (!strncmp(line, "NAME ", 5) && sscanf(line + 5, "%" SCNu32, &n) == 1 && n >= 1 && n <= GATE_SEATS) {
+        /* NAME <1-8> <text>: the rest of the line, up to 12 bytes. */
+        const char *t = line + 5;
+        while (*t >= '0' && *t <= '9') t++;
+        while (*t == ' ') t++;
+        link_text(gate_set_name(n, t) ? "OK\n" : "ERR name\n");
+    } else if (sscanf(line, "RACESET %" SCNu32 " %" SCNu32 " %" SCNu32 " %c", &a, &b, &n, &extra) == 3 && a >= 1 && a <= 99 && n <= 30) {
+        /* RACESET <laps> <holeshot 0|1> <countdown s> */
+        gate_race_t r = {(uint8_t)a, b ? LL_SET_HOLESHOT : 0, (uint8_t)n};
+        gate_set_race(&r);
+        link_text("OK\n");
     } else if (!strcmp(line, "GATE RESET")) {
         gate_reset_counts();
         link_text("OK\n");
@@ -373,6 +390,8 @@ static bool handle_gate(char *line) {
                     "\"dropped\":%u,\"pending\":%u,\"rx\":%u,\"cfg_rx\":%u,\"rssi\":%d,\"snr\":%d}\n",
                     st.up, st.err, (double)st.freq_mhz, st.sf, st.tx, st.acked, st.retries, st.dropped, st.pending,
                     st.rx, st.cfg_rx, st.last_rssi, st.last_snr);
+    } else if (!strcmp(line, "LORA DIAG")) {
+        lora_link_diag();
     } else if (!strcmp(line, "LORA PING")) {
         lora_link_request_status();
         link_text("OK\n");

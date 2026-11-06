@@ -1,8 +1,10 @@
-/* XIAO ESP32-C5 + Wio-SX1262 pin-header module (the "for XIAO" one, SKU
- * 113010003). Silkscreen label -> GPIO from Seeed's XIAO ESP32-C5 pin table;
- * the module's control pins are the ones the power-meter project verified on
- * the S3 (CS=D4, DIO1=D1, RST=D2, BUSY=D3, RXEN=D5, SPI on D8/D9/D10).
- * Override any of them with -DLORA_xxx=<gpio> in platformio.ini. */
+/* XIAO ESP32-C5 + Seeed Wio-SX1262 for XIAO, soldered to the C5's left header
+ * row. Silkscreen label -> GPIO from the Arduino core's XIAO_ESP32C5 variant.
+ * The module's pin labels, read with the C5's USB port at the bottom, give
+ * RF-SW=D4, NSS=D3, RST=D2, BUSY=D1, DIO1=D0 (Meshtastic's SEEED_XIAO_NRF_WIO_BTB
+ * pin set). Verified on hardware: CS, BUSY and DIO1 (the chip answers "SX126x"
+ * and raises DIO1 on TX done). RST and RXEN are as labelled, not separately
+ * verified. SPI is on D8/D9/D10. Override with -DLORA_xxx=<gpio>. */
 #pragma once
 
 #define XIAO_C5_D0   1
@@ -25,17 +27,17 @@
 #define LORA_MOSI  XIAO_C5_D10
 #endif
 #ifndef LORA_CS
-#define LORA_CS    XIAO_C5_D4
+#define LORA_CS    XIAO_C5_D3
 #endif
 #ifndef LORA_DIO1
-#define LORA_DIO1  XIAO_C5_D1
+#define LORA_DIO1  XIAO_C5_D0
 #endif
 #ifndef LORA_RST
 #define LORA_RST   XIAO_C5_D2
 #endif
 #ifndef LORA_BUSY
-#define LORA_BUSY  XIAO_C5_D3
+#define LORA_BUSY  XIAO_C5_D1
 #endif
 #ifndef LORA_RXEN
-#define LORA_RXEN  XIAO_C5_D5
+#define LORA_RXEN  XIAO_C5_D4
 #endif
