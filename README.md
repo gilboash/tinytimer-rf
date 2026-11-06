@@ -156,7 +156,7 @@ Attach the antenna before the first power-up, as above.
 
 ### The finished units
 
-<img src="docs/images/packaged-units.jpg" alt="The gate and the base in their cases, with the 21700 battery power bank" width="60%">
+<img src="docs/images/packaged-units.jpg" alt="The gate and the base in their cases, with the 21700 battery power bank" width="80%">
 
 *The gate and the base in their 3D-printed cases ([Thingiverse](https://www.thingiverse.com/thing:7431467)), labelled, with the flat LoRa antenna leaving through the top of each. Below
 them, the 21700 battery power-bank case that powers the gate at the track (its USB-C lead plugs straight into the
