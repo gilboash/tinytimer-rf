@@ -79,8 +79,8 @@ continuity buzzer, and a magnifier if your eyes are like mine.
 | **A browser** | Chrome, Safari or Firefox | for the pages; Chrome on a computer for the debug pages |
 
 ```sh
-git clone https://github.com/gilboash/espc5-rf-lap-timer.git tinytimer
-cd tinytimer
+git clone https://github.com/gilboash/tinytimer-rf.git
+cd tinytimer-rf
 python3 -m venv .venv
 .venv/bin/pip install "platformio>=6.2" pyserial
 ```
