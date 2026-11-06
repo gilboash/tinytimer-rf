@@ -10,10 +10,10 @@ no wiring to the track.
 <p>
   <img src="docs/images/race-page.png" alt="The race page on a phone" height="520">
   &nbsp;&nbsp;
-  <img src="docs/images/gate-top.jpg" alt="The gate: XIAO ESP32-C5 with the LoRa module soldered under it" height="520">
+  <img src="docs/images/packaged-units.jpg" alt="The gate and the base in their cases, with the 21700 battery power bank" height="520">
 </p>
 
-*Left: the race page on a phone (demo data). Right: the gate.*
+*Left: the race page on a phone (demo data). Right: the gate and the base in their cases, with the 21700 battery pack that powers the gate.*
 
 - [How it works](#how-it-works)
 - [What you need](#what-you-need) · [Parts](#parts) · [Tools](#tools) · [Software](#software)
