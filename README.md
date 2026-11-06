@@ -55,7 +55,8 @@ For one gate and one base:
 | 2 | **860–930 MHz antenna with U.FL lead** | one per LoRa module | The small flexible Seeed antenna ("A-03") that ships with the modules is what the photos show. |
 | 2 | **1×7 pin headers, 2.54 mm** | stacking the gate's two boards | Two strips for the gate stack (see photos). |
 | 2 | **USB-C data cables** | flashing, powering | Must be data cables, not charge-only. |
-| 1 | **USB power bank (5 V)** | powering the gate away from a computer | |
+| 1 | **USB power for the gate**: a **21700 battery power-bank case** (the red one in the photo below, with a built-in USB-C lead and a charge display) or any 5 V power bank | powering the gate away from a computer | A 21700 cell in a power-bank case gives many hours; the gate draws well under 1 W. |
+| 2 | **Enclosure** (optional) | one for the gate, one for the base | The photo below shows 3D-printed cases with the USB-C port open at the bottom and the antenna leaving through the top. Any case works that keeps the antenna outside metal and USB-C reachable. |
 | – | A phone with WiFi | race page | Any modern phone. |
 
 > **Region.** The LoRa link runs on 868.1 MHz (EU SRD band, 1 % duty cycle: the firmware stays well under it).
@@ -152,6 +153,17 @@ internal connections (the pins are set in the base firmware), so no jumper wires
 The base needs only the USB-C port for power.*
 
 Attach the antenna before the first power-up, as above.
+
+### The finished units
+
+<img src="docs/images/packaged-units.jpg" alt="The gate and the base in their cases, with the 21700 battery power bank" width="60%">
+
+*The gate and the base in their cases, labelled, with the flat LoRa antenna leaving through the top of each. Below
+them, the 21700 battery power-bank case that powers the gate at the track (its USB-C lead plugs straight into the
+gate's USB-C port). The base can run from any USB power source; a second power bank works as well.*
+
+Mount the gate where the quads pass, with its antenna clear of metal and carbon. The base can sit anywhere within
+LoRa range (hundreds of metres in the open), with your phones within WiFi range of it.
 
 ---
 
