@@ -13,7 +13,7 @@ no wiring to the track.
   <img src="docs/images/cases.jpg" alt="The gate and the base in their printed cases" height="520">
 </p>
 
-*Left: the race page on a phone (demo data). Right: the gate and the base in their cases, with the 21700 battery pack that powers the gate.*
+*Left: the race page on a phone (demo data). Right: the gate and the base in their 3D-printed cases.*
 
 - [How it works](#how-it-works)
 - [What you need](#what-you-need) · [Parts](#parts) · [Tools](#tools) · [Software](#software)
